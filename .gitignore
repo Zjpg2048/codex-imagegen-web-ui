@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Generated output
+output/
+.debate/
+.execute/
+plan-history/
+
+# Runtime state
+.saved-prompts.json
+.webapp-history.json
+
+# Node
+remotion-video/node_modules/
+remotion-video/package-lock.json
+
+# Large generated assets
+remotion-video/public/input/
+
+# OS
+.DS_Store

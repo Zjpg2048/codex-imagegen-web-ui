@@ -1,0 +1,20 @@
+{
+  "name": "comic-remotion-video",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "render": "remotion render",
+    "studio": "remotion studio"
+  },
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "remotion": "4.0.460"
+  },
+  "devDependencies": {
+    "@remotion/cli": "4.0.460",
+    "@types/react": "^19.1.5",
+    "@types/react-dom": "^19.1.5",
+    "typescript": "^5.8.3"
+  }
+}
