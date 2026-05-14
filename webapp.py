@@ -472,6 +472,68 @@ def delete_saved_prompts(saved_prompts_file: Path, prompts_to_delete: list[str])
     return deleted_count
 
 
+def _resolve_history_image_path(project_root: Path, raw_path: str) -> Path | None:
+    cleaned = raw_path.strip()
+    if not cleaned:
+        return None
+    requested_path = Path(cleaned)
+    candidate = (requested_path if requested_path.is_absolute() else project_root / requested_path).resolve()
+    try:
+        candidate.relative_to(project_root.resolve())
+    except ValueError:
+        return None
+    return candidate
+
+
+def delete_history_image(history_file: Path, project_root: Path, image_path: Path) -> dict[str, Any]:
+    target_path = image_path.resolve()
+    entries = load_history_entries(history_file)
+    updated_entries: list[dict[str, Any]] = []
+    deleted_history_count = 0
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        raw_images = entry.get("images", [])
+        if not isinstance(raw_images, list):
+            updated_entries.append(entry)
+            continue
+
+        remaining_images: list[dict[str, Any]] = []
+        entry_deleted_count = 0
+        for image in raw_images:
+            if not isinstance(image, dict):
+                continue
+            resolved_image_path = _resolve_history_image_path(project_root, str(image.get("path", "")))
+            if resolved_image_path == target_path:
+                deleted_history_count += 1
+                entry_deleted_count += 1
+                continue
+            remaining_images.append(image)
+
+        if entry_deleted_count:
+            if remaining_images:
+                updated_entries.append({**entry, "images": remaining_images, "count": len(remaining_images)})
+            continue
+        updated_entries.append(entry)
+
+    if deleted_history_count:
+        history_file.parent.mkdir(parents=True, exist_ok=True)
+        history_file.write_text(json.dumps(updated_entries[:50], indent=2), encoding="utf-8")
+
+    deleted_file = False
+    if target_path.exists():
+        if not target_path.is_file():
+            raise ValueError("image path must point to a file")
+        target_path.unlink()
+        deleted_file = True
+
+    return {
+        "deleted_history_count": deleted_history_count,
+        "deleted_file": deleted_file,
+    }
+
+
 def serialize_batch_result(batch: GenerationBatchResult) -> dict[str, Any]:
     return {
         "prompt": batch.prompt,
@@ -1276,7 +1338,7 @@ def _render_reference_image_previews(reference_images: list[str]) -> str:
 
 
 
-def render_history_page(entries: list[dict[str, Any]]) -> str:
+def render_history_page(entries: list[dict[str, Any]], info_message: str = "") -> str:
     sections: list[str] = []
     for entry in entries:
         raw_prompt = str(entry.get("prompt", ""))
@@ -1292,7 +1354,17 @@ def render_history_page(entries: list[dict[str, Any]]) -> str:
             path = html.escape(raw_path, quote=True)
             assistant_message = html.escape(str(image.get("assistant_message", "")))
             images_html.append(
-                f"<li><a href=\"/files/{quote(raw_path)}\">{path}</a> — {assistant_message}<br /><img src=\"/files/{quote(raw_path)}\" alt=\"History thumbnail\" style=\"max-width: 220px; margin-top: 8px; border-radius: 10px;\" /></li>"
+                f"""
+                <li>
+                  <a href="/files/{quote(raw_path)}">{path}</a> — {assistant_message}
+                  <form method="post" action="/delete-history-image" style="display:inline-block; margin-left:12px;" onsubmit="return window.confirm('Delete this file and remove it from history?');">
+                    <input type="hidden" name="image_path" value="{path}" />
+                    <button type="submit">Delete file</button>
+                  </form>
+                  <br />
+                  <img src="/files/{quote(raw_path)}" alt="History thumbnail" style="max-width: 220px; margin-top: 8px; border-radius: 10px;" />
+                </li>
+                """
             )
         sections.append(
             f"""
@@ -1308,7 +1380,15 @@ def render_history_page(entries: list[dict[str, Any]]) -> str:
             """
         )
 
-    body = "".join(sections) or "<section class=\"card\"><p>No history yet.</p></section>"
+    info_html = (
+        f"""
+        <div class="toast toast-success" role="status" aria-live="polite">{html.escape(info_message)}</div>
+        <section class="card card-highlight"><p>{html.escape(info_message)}</p></section>
+        """
+        if info_message
+        else ""
+    )
+    body = info_html + ("".join(sections) or "<section class=\"card\"><p>No history yet.</p></section>")
     return f"""
 <!doctype html>
 <html lang=\"en\">
@@ -1320,7 +1400,22 @@ def render_history_page(entries: list[dict[str, Any]]) -> str:
     body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; background: #111827; color: #f9fafb; }}
     main {{ max-width: 960px; margin: 0 auto; padding: 32px 20px 64px; }}
     .card {{ background: #1f2937; border-radius: 16px; padding: 20px; margin-top: 20px; }}
+    .card-highlight {{ border: 1px solid #34d399; box-shadow: 0 0 0 1px rgba(52, 211, 153, 0.2), 0 0 0 0 rgba(52, 211, 153, 0.35); animation: card-highlight-pulse 1.8s ease-out 1; }}
+    .toast {{ position: sticky; top: 16px; z-index: 10; margin-top: 8px; padding: 14px 16px; border-radius: 12px; font-weight: 600; animation: toast-in 220ms ease-out, toast-fade 4s ease-in 2.2s forwards; }}
+    .toast-success {{ background: #064e3b; color: #d1fae5; border: 1px solid #34d399; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25); }}
     a {{ color: #93c5fd; }}
+    @keyframes toast-in {{
+      from {{ opacity: 0; transform: translateY(-8px); }}
+      to {{ opacity: 1; transform: translateY(0); }}
+    }}
+    @keyframes toast-fade {{
+      from {{ opacity: 1; max-height: 120px; margin-bottom: 0; }}
+      to {{ opacity: 0; max-height: 0; margin-bottom: -12px; padding-top: 0; padding-bottom: 0; border-width: 0; }}
+    }}
+    @keyframes card-highlight-pulse {{
+      0% {{ box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.45); }}
+      100% {{ box-shadow: 0 0 0 14px rgba(52, 211, 153, 0); }}
+    }}
   </style>
 </head>
 <body>
@@ -2137,6 +2232,9 @@ class CodexImageGenHandler(BaseHTTPRequestHandler):
         if parsed.path == "/delete-saved-prompts":
             self._handle_delete_saved_prompts()
             return
+        if parsed.path == "/delete-history-image":
+            self._handle_delete_history_image()
+            return
         if parsed.path == "/open-folder":
             self._handle_open_folder()
             return
@@ -2265,6 +2363,41 @@ class CodexImageGenHandler(BaseHTTPRequestHandler):
         self._send_html(
             render_saved_prompts_page(
                 load_saved_prompts(self.task_manager.runner.saved_prompts_file),
+                info_message=info_message,
+            )
+        )
+
+    def _handle_delete_history_image(self) -> None:
+        params = self._read_form_params()
+        raw_image_path = params.get("image_path", [""])[0]
+        try:
+            image_path = self._resolve_project_path(raw_image_path, error_label="image path")
+            deletion_result = delete_history_image(
+                self.task_manager.runner.history_file,
+                self.task_manager.project_root,
+                image_path,
+            )
+            deleted_history_count = int(deletion_result["deleted_history_count"])
+            deleted_file = bool(deletion_result["deleted_file"])
+            if deleted_history_count and deleted_file:
+                info_message = f"Deleted {deleted_history_count} history item and removed file"
+            elif deleted_history_count:
+                info_message = f"Deleted {deleted_history_count} history item; file was already missing"
+            else:
+                info_message = "No matching history item found"
+        except Exception as exc:
+            self._send_html(
+                render_history_page(
+                    load_history_entries(self.task_manager.runner.history_file),
+                    info_message=str(exc),
+                ),
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+
+        self._send_html(
+            render_history_page(
+                load_history_entries(self.task_manager.runner.history_file),
                 info_message=info_message,
             )
         )

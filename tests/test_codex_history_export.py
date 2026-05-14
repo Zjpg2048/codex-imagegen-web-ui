@@ -11,6 +11,7 @@ from webapp import (
     GenerationBatchResult,
     GenerationResult,
     append_history_entry,
+    delete_history_image,
     delete_saved_prompts,
     export_generated_file,
     load_history_entries,
@@ -110,6 +111,81 @@ class TestHistoryPersistence:
         assert len(prompts) == 1
         assert prompts[0]["prompt"] == "draw a whale"
 
+    def test_delete_history_image_removes_file_and_history_item(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            history_file = root / "history.json"
+            output_dir = root / "output/web"
+            output_dir.mkdir(parents=True)
+            batch = _sample_batch(output_dir)
+            for item in batch.results:
+                item.image_path.write_bytes(b"png")
+            append_history_entry(history_file, batch)
+
+            deleted = delete_history_image(history_file, root, output_dir / "generated-01.png")
+            entries = load_history_entries(history_file)
+
+        assert deleted["deleted_history_count"] == 1
+        assert deleted["deleted_file"] is True
+        assert len(entries) == 1
+        assert len(entries[0]["images"]) == 1
+        assert entries[0]["images"][0]["path"].endswith("generated-02.png")
+
+    def test_delete_history_image_drops_empty_entry_when_last_image_removed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            history_file = root / "history.json"
+            image_path = root / "output/web/generated-01.png"
+            image_path.parent.mkdir(parents=True)
+            image_path.write_bytes(b"png")
+            history_file.write_text(
+                """
+[
+  {
+    "prompt": "draw a fox",
+    "count": 1,
+    "output_dir": "output/web",
+    "created_at": "2026-05-12T10:00:00Z",
+    "images": [{"path": "output/web/generated-01.png", "assistant_message": "done-1"}]
+  }
+]
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            deleted = delete_history_image(history_file, root, image_path)
+            entries = load_history_entries(history_file)
+
+        assert deleted["deleted_history_count"] == 1
+        assert deleted["deleted_file"] is True
+        assert entries == []
+
+    def test_delete_history_image_still_removes_stale_history_when_file_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            history_file = root / "history.json"
+            history_file.write_text(
+                """
+[
+  {
+    "prompt": "draw a fox",
+    "count": 1,
+    "output_dir": "output/web",
+    "created_at": "2026-05-12T10:00:00Z",
+    "images": [{"path": "output/web/generated-01.png", "assistant_message": "done-1"}]
+  }
+]
+                """.strip(),
+                encoding="utf-8",
+            )
+
+            deleted = delete_history_image(history_file, root, root / "output/web/generated-01.png")
+            entries = load_history_entries(history_file)
+
+        assert deleted["deleted_history_count"] == 1
+        assert deleted["deleted_file"] is False
+        assert entries == []
+
 
 class TestHistoryRendering:
     def test_render_history_page_shows_entries(self):
@@ -134,9 +210,23 @@ class TestHistoryRendering:
         assert "History" in html
         assert "Copy prompt" in html
         assert "Use prompt" in html
+        assert "Delete file" in html
+        assert 'action="/delete-history-image"' in html
+        assert 'name="image_path"' in html
+        assert "window.confirm" in html
         assert 'data-copy-history-prompt="draw a whale"' in html
         assert 'href="/?prompt=draw%20a%20whale"' in html
         assert "navigator.clipboard.writeText" in html
+
+    def test_render_history_page_shows_toast_and_highlight_for_info_message(self):
+        html = render_history_page([], info_message="Deleted 1 history item and removed file")
+
+        assert 'class="toast toast-success"' in html
+        assert 'role="status"' in html
+        assert "Deleted 1 history item and removed file" in html
+        assert 'class="card card-highlight"' in html
+        assert "@keyframes toast-in" in html
+        assert "@keyframes card-highlight-pulse" in html
 
     def test_render_saved_prompts_page_shows_saved_prompts(self):
         html = render_saved_prompts_page(

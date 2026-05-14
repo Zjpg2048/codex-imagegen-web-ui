@@ -15,6 +15,7 @@ from webapp import (
     GenerationBatchResult,
     GenerationResult,
     GenerationTaskManager,
+    append_history_entry,
     build_codex_exec_prompt,
     build_codex_image_analysis_prompt,
     render_page,
@@ -649,6 +650,74 @@ class TestSavePromptHandler:
             assert "draw a whale" in html
             assert "draw a fox" not in html
             assert "draw a castle" not in html
+
+    def test_delete_history_image_removes_file_and_history_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manager = GenerationTaskManager(project_root=root)
+            output_dir = root / "output/web"
+            output_dir.mkdir(parents=True)
+            image_path = output_dir / "generated-01.png"
+            image_path.write_bytes(b"png")
+            append_history_entry(
+                manager.runner.history_file,
+                GenerationBatchResult(
+                    prompt="draw a fox",
+                    output_dir=output_dir,
+                    results=[
+                        GenerationResult(
+                            prompt="draw a fox",
+                            image_index=1,
+                            total_images=1,
+                            image_path=image_path,
+                            assistant_message="done-1",
+                        )
+                    ],
+                ),
+            )
+
+            class HandlerHarness(CodexImageGenHandler):
+                task_manager = manager
+
+                def __init__(self, *, path: str, body: bytes):
+                    from io import BytesIO
+
+                    self.path = path
+                    self.command = "POST"
+                    self.rfile = BytesIO(body)
+                    self.wfile = BytesIO()
+                    self.headers = {
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Content-Length": str(len(body)),
+                    }
+                    self.response_status = None
+
+                def send_response(self, code: int, message: str | None = None) -> None:
+                    self.response_status = code
+
+                def send_header(self, keyword: str, value: str) -> None:
+                    return
+
+                def end_headers(self) -> None:
+                    return
+
+                def send_error(self, code: int, message: str | None = None) -> None:
+                    self.response_status = code
+
+                def log_message(self, format: str, *args: object) -> None:
+                    return
+
+            handler = HandlerHarness(
+                path="/delete-history-image",
+                body=f"image_path={image_path.as_posix()}".encode("utf-8"),
+            )
+            handler.do_POST()
+
+            html = handler.wfile.getvalue().decode("utf-8")
+            assert handler.response_status == 200
+            assert "Deleted 1 history item and removed file" in html
+            assert "No history yet." in html
+            assert image_path.exists() is False
 
 
 class TestDescribeImageHandler:
