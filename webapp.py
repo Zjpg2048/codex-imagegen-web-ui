@@ -394,6 +394,10 @@ class GenerationTaskManager:
         source_image: Path | None = None,
         duration_seconds: int = DEFAULT_VIDEO_DURATION_SECONDS,
         aspect_ratio: str = DEFAULT_VIDEO_ASPECT_RATIO,
+        analysis_image_path: Path | None = None,
+        analysis_mode: str = "",
+        analysis_agent: str = "",
+        user_instruction: str = "",
     ) -> str:
         task_id = uuid4().hex
         task = {
@@ -408,6 +412,10 @@ class GenerationTaskManager:
             "source_image": str(source_image) if source_image is not None else "",
             "duration_seconds": duration_seconds,
             "aspect_ratio": aspect_ratio,
+            "analysis_image_path": str(analysis_image_path) if analysis_image_path else "",
+            "analysis_mode": analysis_mode,
+            "analysis_agent": analysis_agent,
+            "user_instruction": user_instruction,
             "error": "",
             "result": None,
             "live_log": "",
@@ -442,6 +450,27 @@ class GenerationTaskManager:
         self._spawn_worker(task_id)
         return task_id
 
+    def start_analysis_task(
+        self,
+        *,
+        image_path: Path,
+        analysis_mode: str,
+        analysis_agent: str,
+        user_instruction: str,
+    ) -> str:
+        task_id = self.create_task_record(
+            prompt=f"[analysis] {image_path.name}",
+            count=1,
+            output_dir=self.runner.default_output_root,
+            task_kind="analysis",
+            analysis_image_path=image_path,
+            analysis_mode=analysis_mode,
+            analysis_agent=analysis_agent,
+            user_instruction=user_instruction,
+        )
+        self._spawn_worker(task_id)
+        return task_id
+
     def _spawn_worker(self, task_id: str) -> None:
         worker = threading.Thread(target=self._run_task, args=(task_id,), daemon=True)
         worker.start()
@@ -465,6 +494,35 @@ class GenerationTaskManager:
                     should_cancel=lambda: self._is_cancel_requested(task_id),
                     on_output=lambda chunk: self._append_task_log(task_id, chunk),
                 )
+            elif str(task.get("kind", "image")) == "analysis":
+                from analysis import analyze_image_with_claude
+                from storage import append_analysis_entry, DEFAULT_ANALYSIS_HISTORY_FILE
+                image_path = Path(str(task["analysis_image_path"]))
+                if task["analysis_agent"] == "claude":
+                    result = analyze_image_with_claude(
+                        image_path,
+                        analysis_mode=str(task["analysis_mode"]),
+                        user_instruction=str(task["user_instruction"]),
+                    )
+                else:
+                    result = self.runner.analyze_image(
+                        image_path,
+                        analysis_mode=str(task["analysis_mode"]),
+                        user_instruction=str(task["user_instruction"]),
+                    )
+                analysis_history_file = self.project_root / DEFAULT_ANALYSIS_HISTORY_FILE
+                append_analysis_entry(analysis_history_file, result)
+                with self._lock:
+                    task["status"] = "completed"
+                    task["completed_count"] = 1
+                    task["result"] = {
+                        "image_path": str(result.image_path),
+                        "analysis_mode": result.analysis_mode,
+                        "analysis_agent": result.analysis_agent,
+                        "user_instruction": result.user_instruction,
+                        "output_text": result.output_text,
+                    }
+                return
             else:
                 image_run_kwargs: dict[str, Any] = {
                     "count": int(task["count"]),
@@ -1445,6 +1503,32 @@ def render_task_page(task: dict[str, Any]) -> str:
             )
         )
 
+    if task_kind == "analysis":
+        output_text = html.escape(str(result.get("output_text", "")))
+        agent = html.escape(str(result.get("analysis_agent", "")))
+        mode = html.escape(str(result.get("analysis_mode", "")))
+        instruction = html.escape(str(result.get("user_instruction", "") or "Analyze the image"))
+        task_result_html = f"""
+    <div style="margin-top:16px;">
+      <p style="margin:4px 0;"><strong>Agent:</strong> {agent} &nbsp; <strong>Mode:</strong> {mode}</p>
+      <p style="margin:4px 0 12px;"><strong>Instruction:</strong> {instruction}</p>
+      <pre id="analysisOutput" style="white-space:pre-wrap;word-break:break-word;background:#111827;border-radius:8px;padding:12px;">{output_text}</pre>
+      <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('analysisOutput').textContent)" style="margin-top:8px;padding:8px 14px;border:0;border-radius:8px;background:#2563eb;color:white;cursor:pointer;">Copy</button>
+    </div>"""
+        return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Analysis Result</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #111827; color: #f9fafb; padding: 32px;">
+  <h1>Image Analysis Result</h1>
+  {task_result_html}
+  <p><a href="/" style="color:#93c5fd;">← Back</a></p>
+</body>
+</html>"""
+
     results = result.get("results") or []
     batch = GenerationBatchResult(
         prompt=str(result.get("prompt", task.get("prompt", ""))),
@@ -2307,18 +2391,12 @@ class CodexImageGenHandler(BaseHTTPRequestHandler):
             )
             if not saved_uploads:
                 raise ValueError("please upload one image to describe")
-            if analysis_agent == "claude":
-                result = analyze_image_with_claude(
-                    saved_uploads[0],
-                    analysis_mode=analysis_mode,
-                    user_instruction=user_instruction,
-                )
-            else:
-                result = self.task_manager.runner.analyze_image(
-                    saved_uploads[0],
-                    analysis_mode=analysis_mode,
-                    user_instruction=user_instruction,
-                )
+            task_id = self.task_manager.start_analysis_task(
+                image_path=saved_uploads[0],
+                analysis_mode=analysis_mode,
+                analysis_agent=analysis_agent,
+                user_instruction=user_instruction,
+            )
         except Exception as exc:
             self._send_html(
                 render_page(
@@ -2331,14 +2409,7 @@ class CodexImageGenHandler(BaseHTTPRequestHandler):
             )
             return
 
-        self._send_html(
-            render_page(
-                analysis_result=result,
-                current_description_prompt=user_instruction,
-                current_image_analysis_mode=analysis_mode_raw,
-                current_image_analysis_agent=analysis_agent,
-            )
-        )
+        self._redirect(f"/tasks/{task_id}")
 
     def _handle_export(self) -> None:
         params = self._read_form_params()
@@ -2505,6 +2576,11 @@ class CodexImageGenHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: object) -> None:
         return
+
+    def _redirect(self, location: str) -> None:
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.send_header("Location", location)
+        self.end_headers()
 
     def _send_html(self, content: str, status: HTTPStatus = HTTPStatus.OK) -> None:
         payload = content.encode("utf-8")
