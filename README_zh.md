@@ -81,12 +81,12 @@ npm install
 
 #### 图生文
 
-- 上传图片，提取可复用的生成提示词或结构化视觉字段
-- **Agent 选择：** Claude（默认，使用本地 `claude` CLI，模型为 Haiku 4.5）或 Codex
-- 两种分析模式：反向提示词 / 结构化分析
+- 最多上传 4 张图片进行分析
+- **Agent 选择：** Claude（默认，`claude` CLI，Haiku 4.5）或 Codex
+- 两种模式：反向提示词（单行生成提示词）/ 结构化分析（JSON 键值表格）
 - 可选附加指令，聚焦分析内容
-- 结果内嵌显示在同一卡片内
-- "Use as image prompt" 按钮，一键将结果填入生成表单
+- 以后台任务运行——结果显示在任务页面，支持一键复制
+- 分析历史记录见 `/analysis-history`
 
 ### 工作原理
 
@@ -108,7 +108,8 @@ npm install
 ### 注意事项
 
 - 图片生成**不需要** `OPENAI_API_KEY`，但需要已登录的本地 Codex 会话；Codex 图生文同理。
-- 图生文选择 Claude agent 需要已登录的本地 `claude` CLI（`claude login`）。
+- 图生文选择 Claude agent 需要已完成认证的本地 `claude` 会话（`claude login`）。
+- 分析历史记录保存在 `.webapp-analysis-history.json`（最多 100 条）。
 - 视频渲染依赖本地 `remotion-video/` 工作区。
 - 输出目录必须在本项目内部。
 - 导出目标目录可在项目外，但必须已存在且为目录。
