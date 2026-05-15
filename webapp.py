@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import html
 import json
 import mimetypes
@@ -109,12 +110,19 @@ IMAGE_ANALYSIS_MODES: dict[str, str] = {
 }
 DEFAULT_IMAGE_ANALYSIS_MODE = "reverse-prompt"
 
+IMAGE_ANALYSIS_AGENTS: dict[str, str] = {
+    "claude": "Claude",
+    "codex": "Codex",
+}
+DEFAULT_IMAGE_ANALYSIS_AGENT = "claude"
+
 
 @dataclass(frozen=True)
 class ImageAnalysisResult:
     image_path: Path
     user_instruction: str
     analysis_mode: str
+    analysis_agent: str
     output_text: str
     codex_output: str
 
@@ -296,6 +304,63 @@ def build_codex_image_analysis_prompt(analysis_mode: str, user_instruction: str)
     )
 
 
+def analyze_image_with_claude(
+    image_path: Path,
+    *,
+    analysis_mode: str,
+    user_instruction: str,
+) -> ImageAnalysisResult:
+    image_bytes = image_path.read_bytes()
+    mime_type, _ = mimetypes.guess_type(str(image_path))
+    if mime_type not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
+        mime_type = "image/jpeg"
+    b64_data = base64.standard_b64encode(image_bytes).decode()
+
+    prompt_text = build_codex_image_analysis_prompt(analysis_mode, user_instruction)
+
+    stream_msg = json.dumps({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": mime_type, "data": b64_data}},
+                {"type": "text", "text": prompt_text},
+            ],
+        },
+    })
+
+    proc = subprocess.run(
+        ["claude", "-p", "--verbose", "--model", "claude-haiku-4-5-20251001", "--input-format", "stream-json", "--output-format", "stream-json"],
+        input=stream_msg,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    cli_output = proc.stdout
+
+    output_text = ""
+    for line in cli_output.splitlines():
+        try:
+            obj = json.loads(line)
+            if obj.get("type") == "result":
+                output_text = obj.get("result", "").strip()
+                break
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+    if not output_text:
+        raise RuntimeError(f"Claude CLI did not return output. stderr: {proc.stderr[:500]}")
+
+    return ImageAnalysisResult(
+        image_path=image_path,
+        user_instruction=user_instruction.strip(),
+        analysis_mode=analysis_mode,
+        analysis_agent="claude",
+        output_text=output_text,
+        codex_output="",
+    )
+
+
 def stream_subprocess_output(
     command: list[str],
     *,
@@ -458,6 +523,34 @@ def save_prompt_entry(saved_prompts_file: Path, prompt: str) -> None:
     )
     saved_prompts_file.parent.mkdir(parents=True, exist_ok=True)
     saved_prompts_file.write_text(json.dumps(deduped_entries[:50], indent=2), encoding="utf-8")
+
+
+def update_saved_prompt_entry(saved_prompts_file: Path, original_prompt: str, updated_prompt: str) -> None:
+    validated_original_prompt = validate_prompt(original_prompt)
+    validated_updated_prompt = validate_prompt(updated_prompt)
+    entries = load_saved_prompts(saved_prompts_file)
+    matched_entry: dict[str, Any] | None = None
+    remaining_entries: list[dict[str, Any]] = []
+    for entry in entries:
+        entry_prompt = str(entry.get("prompt", ""))
+        if entry_prompt == validated_original_prompt and matched_entry is None:
+            matched_entry = entry
+            continue
+        if entry_prompt == validated_updated_prompt:
+            continue
+        remaining_entries.append(entry)
+    if matched_entry is None:
+        raise ValueError("saved prompt not found")
+    remaining_entries.insert(
+        0,
+        {
+            "prompt": validated_updated_prompt,
+            "created_at": str(matched_entry.get("created_at") or datetime.now(timezone.utc).isoformat()),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    saved_prompts_file.parent.mkdir(parents=True, exist_ok=True)
+    saved_prompts_file.write_text(json.dumps(remaining_entries[:50], indent=2), encoding="utf-8")
 
 
 def delete_saved_prompts(saved_prompts_file: Path, prompts_to_delete: list[str]) -> int:
@@ -861,6 +954,7 @@ class CodexImageGenRunner:
             image_path=validated_image_path,
             user_instruction=user_instruction.strip(),
             analysis_mode=validated_analysis_mode,
+            analysis_agent="codex",
             output_text=output_text,
             codex_output=codex_output,
         )
@@ -1450,14 +1544,25 @@ def render_saved_prompts_page(entries: list[dict[str, Any]], info_message: str =
             continue
         items.append(
             f"""
-            <li>
-              <label>
+            <li class="saved-prompt-item">
+              <div class="saved-prompt-toolbar">
+                <label class="saved-prompt-select">
                 <input type="checkbox" name="saved_prompt" value="{html.escape(raw_prompt, quote=True)}" />
                 Select
-              </label>
-              <code>{html.escape(raw_prompt)}</code>
-              <button type="button" data-use-saved-prompt="{html.escape(raw_prompt, quote=True)}">Use prompt</button>
-              <a href="/?prompt={quote(raw_prompt)}">Open in generator</a>
+                </label>
+                <div class="saved-prompt-actions">
+                  <button type="button" data-use-saved-prompt="{html.escape(raw_prompt, quote=True)}">Use prompt</button>
+                  <a href="/?prompt={quote(raw_prompt)}">Open in generator</a>
+                </div>
+              </div>
+              <code class="saved-prompt-code">{html.escape(raw_prompt)}</code>
+              <form method="post" action="/edit-saved-prompt" class="saved-prompt-editor">
+                <input type="hidden" name="original_prompt" value="{html.escape(raw_prompt, quote=True)}" />
+                <textarea name="prompt" rows="4">{html.escape(raw_prompt)}</textarea>
+                <div class="saved-prompt-editor-actions">
+                  <button type="submit">Save edit</button>
+                </div>
+              </form>
             </li>
             """
         )
@@ -1466,8 +1571,10 @@ def render_saved_prompts_page(entries: list[dict[str, Any]], info_message: str =
         f"""
         <section class="card">
           <form method="post" action="/delete-saved-prompts">
-            <ul>{''.join(items)}</ul>
-            <button type="submit">Delete selected</button>
+            <ul class="saved-prompts-list">{''.join(items)}</ul>
+            <div class="saved-prompts-footer">
+              <button type="submit">Delete selected</button>
+            </div>
           </form>
         </section>
         """
@@ -1489,7 +1596,17 @@ def render_saved_prompts_page(entries: list[dict[str, Any]], info_message: str =
     a {{ color: #93c5fd; }}
     .info {{ color: #86efac; font-weight: 600; }}
     code {{ word-break: break-word; }}
-    li {{ margin-top: 12px; }}
+    button, textarea {{ font: inherit; }}
+    .saved-prompts-list {{ list-style: none; padding: 0; margin: 0; display: grid; gap: 16px; }}
+    .saved-prompt-item {{ background: #111827; border: 1px solid #374151; border-radius: 16px; padding: 16px; }}
+    .saved-prompt-toolbar {{ display: flex; justify-content: space-between; gap: 12px; align-items: center; flex-wrap: wrap; }}
+    .saved-prompt-select {{ display: inline-flex; align-items: center; gap: 8px; color: #d1d5db; }}
+    .saved-prompt-actions {{ display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }}
+    .saved-prompt-code {{ display: block; margin-top: 12px; padding: 12px; background: #0f172a; border-radius: 12px; white-space: pre-wrap; }}
+    .saved-prompt-editor {{ margin-top: 12px; display: grid; gap: 10px; }}
+    .saved-prompt-editor textarea {{ width: 100%; box-sizing: border-box; padding: 12px; border-radius: 12px; border: 1px solid #4b5563; background: #0f172a; color: #f9fafb; resize: vertical; }}
+    .saved-prompt-editor-actions {{ display: flex; justify-content: flex-end; }}
+    .saved-prompts-footer {{ margin-top: 16px; display: flex; justify-content: flex-end; }}
   </style>
 </head>
 <body>
@@ -1745,6 +1862,7 @@ def render_page(
     current_prompt: str = "",
     current_description_prompt: str = "",
     current_image_analysis_mode: str = DEFAULT_IMAGE_ANALYSIS_MODE,
+    current_image_analysis_agent: str = DEFAULT_IMAGE_ANALYSIS_AGENT,
     current_video_prompt: str = "",
     current_video_motion_preset: str = DEFAULT_VIDEO_MOTION_PRESET,
     current_video_source_path: str = "",
@@ -1775,6 +1893,15 @@ def render_page(
             f"{html.escape(mode_label)}</option>"
         )
         for mode_value, mode_label in IMAGE_ANALYSIS_MODES.items()
+    )
+    selected_image_analysis_agent = current_image_analysis_agent if current_image_analysis_agent in IMAGE_ANALYSIS_AGENTS else DEFAULT_IMAGE_ANALYSIS_AGENT
+    image_analysis_agent_options = "".join(
+        (
+            f'<option value="{html.escape(agent_value, quote=True)}"'
+            f'{" selected" if agent_value == selected_image_analysis_agent else ""}>'
+            f"{html.escape(agent_label)}</option>"
+        )
+        for agent_value, agent_label in IMAGE_ANALYSIS_AGENTS.items()
     )
     result_html = ""
     if result is not None:
@@ -1861,19 +1988,25 @@ def render_page(
             if analysis_result.analysis_mode == "reverse-prompt"
             else ""
         )
+        codex_terminal_html = (
+            f"""<details style=\"margin-top: 12px;\">
+          <summary>Codex terminal output</summary>
+          <pre>{html.escape(analysis_result.codex_output)}</pre>
+        </details>"""
+            if analysis_result.analysis_agent == "codex" and analysis_result.codex_output
+            else ""
+        )
+        agent_label = IMAGE_ANALYSIS_AGENTS.get(analysis_result.analysis_agent, analysis_result.analysis_agent)
         analysis_result_html = f"""
-        <section class=\"card\">
-          <h2>Image to text result</h2>
-          <p><strong>Mode:</strong> {html.escape(analysis_result.analysis_mode)}</p>
-          <p><strong>Instruction:</strong> {html.escape(analysis_result.user_instruction or "Analyze the image")}</p>
-          <pre>{html.escape(analysis_result.output_text)}</pre>
-          {use_as_image_prompt_button_html}
-          {_render_media_preview(relative_description_image_path, "Uploaded image")}
-          <details>
-            <summary>Codex terminal output</summary>
-            <pre>{html.escape(analysis_result.codex_output)}</pre>
-          </details>
-        </section>
+        <hr style=\"border: none; border-top: 1px solid #374151; margin: 20px 0;\" />
+        <h3 style=\"margin: 0 0 12px;\">Result</h3>
+        <p style=\"margin: 4px 0;\"><strong>Agent:</strong> {html.escape(agent_label)}</p>
+        <p style=\"margin: 4px 0;\"><strong>Mode:</strong> {html.escape(analysis_result.analysis_mode)}</p>
+        <p style=\"margin: 4px 0 12px;\"><strong>Instruction:</strong> {html.escape(analysis_result.user_instruction or "Analyze the image")}</p>
+        <pre style=\"white-space: pre-wrap; word-break: break-word;\">{html.escape(analysis_result.output_text)}</pre>
+        {use_as_image_prompt_button_html}
+        {_render_media_preview(relative_description_image_path, "Uploaded image")}
+        {codex_terminal_html}
         """
 
     error_html = f"<p class=\"error\">{html.escape(error_message)}</p>" if error_message else ""
@@ -1996,12 +2129,22 @@ def render_page(
     {result_html}
     <section class=\"card\">
       <h2>Image to text</h2>
-      <p class=\"hint\">Upload one image and let Codex either reverse-engineer a prompt or extract structured visual fields.</p>
+      <p class=\"hint\">Upload one image and let the selected agent either reverse-engineer a prompt or extract structured visual fields.</p>
       <form method=\"post\" action=\"/describe-image\" id=\"describeImageForm\" enctype=\"multipart/form-data\">
-        <label for=\"analysis_mode\">Analysis mode</label>
-        <select id=\"analysis_mode\" name=\"analysis_mode\">
-          {image_analysis_mode_options}
-        </select>
+        <div class=\"row\" style=\"grid-template-columns: 1fr 1fr;\">
+          <div>
+            <label for=\"analysis_agent\">Agent</label>
+            <select id=\"analysis_agent\" name=\"analysis_agent\">
+              {image_analysis_agent_options}
+            </select>
+          </div>
+          <div>
+            <label for=\"analysis_mode\">Analysis mode</label>
+            <select id=\"analysis_mode\" name=\"analysis_mode\">
+              {image_analysis_mode_options}
+            </select>
+          </div>
+        </div>
         <label for=\"description_prompt\">Optional instruction</label>
         <textarea id=\"description_prompt\" name=\"prompt\" maxlength=\"{PROMPT_MAX_LENGTH}\" placeholder=\"For example: focus on outfit, style, pose, and scene\">{html.escape(current_description_prompt)}</textarea>
         <div style=\"margin-top: 12px;\">
@@ -2011,9 +2154,9 @@ def render_page(
         <button type=\"submit\" id=\"describeImageSubmitButton\">Analyze image</button>
         <p class=\"status\" id=\"describeImageStatusMessage\">Analyzing image… This can take a little while.</p>
       </form>
+      {analysis_result_html}
     </section>
     {video_result_html}
-    {analysis_result_html}
   </main>
   <script>
     const form = document.getElementById("generateForm");
@@ -2232,6 +2375,9 @@ class CodexImageGenHandler(BaseHTTPRequestHandler):
         if parsed.path == "/delete-saved-prompts":
             self._handle_delete_saved_prompts()
             return
+        if parsed.path == "/edit-saved-prompt":
+            self._handle_edit_saved_prompt()
+            return
         if parsed.path == "/delete-history-image":
             self._handle_delete_history_image()
             return
@@ -2367,6 +2513,32 @@ class CodexImageGenHandler(BaseHTTPRequestHandler):
             )
         )
 
+    def _handle_edit_saved_prompt(self) -> None:
+        params = self._read_form_params()
+        original_prompt = params.get("original_prompt", [""])[0]
+        updated_prompt = params.get("prompt", [""])[0]
+        try:
+            update_saved_prompt_entry(
+                self.task_manager.runner.saved_prompts_file,
+                original_prompt,
+                updated_prompt,
+            )
+        except Exception as exc:
+            self._send_html(
+                render_saved_prompts_page(
+                    load_saved_prompts(self.task_manager.runner.saved_prompts_file),
+                    info_message=f"Failed to update saved prompt: {exc}",
+                ),
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+        self._send_html(
+            render_saved_prompts_page(
+                load_saved_prompts(self.task_manager.runner.saved_prompts_file),
+                info_message="Updated saved prompt",
+            )
+        )
+
     def _handle_delete_history_image(self) -> None:
         params = self._read_form_params()
         raw_image_path = params.get("image_path", [""])[0]
@@ -2406,6 +2578,8 @@ class CodexImageGenHandler(BaseHTTPRequestHandler):
         params, uploads = self._read_form_submission()
         user_instruction = params.get("prompt", [""])[0]
         analysis_mode_raw = params.get("analysis_mode", [DEFAULT_IMAGE_ANALYSIS_MODE])[0]
+        analysis_agent_raw = params.get("analysis_agent", [DEFAULT_IMAGE_ANALYSIS_AGENT])[0]
+        analysis_agent = analysis_agent_raw if analysis_agent_raw in IMAGE_ANALYSIS_AGENTS else DEFAULT_IMAGE_ANALYSIS_AGENT
 
         try:
             analysis_mode = validate_image_analysis_mode(analysis_mode_raw)
@@ -2415,17 +2589,25 @@ class CodexImageGenHandler(BaseHTTPRequestHandler):
             )
             if not saved_uploads:
                 raise ValueError("please upload one image to describe")
-            result = self.task_manager.runner.analyze_image(
-                saved_uploads[0],
-                analysis_mode=analysis_mode,
-                user_instruction=user_instruction,
-            )
+            if analysis_agent == "claude":
+                result = analyze_image_with_claude(
+                    saved_uploads[0],
+                    analysis_mode=analysis_mode,
+                    user_instruction=user_instruction,
+                )
+            else:
+                result = self.task_manager.runner.analyze_image(
+                    saved_uploads[0],
+                    analysis_mode=analysis_mode,
+                    user_instruction=user_instruction,
+                )
         except Exception as exc:
             self._send_html(
                 render_page(
                     error_message=str(exc),
                     current_description_prompt=user_instruction,
                     current_image_analysis_mode=analysis_mode_raw,
+                    current_image_analysis_agent=analysis_agent,
                 ),
                 status=HTTPStatus.BAD_REQUEST,
             )
@@ -2436,6 +2618,7 @@ class CodexImageGenHandler(BaseHTTPRequestHandler):
                 analysis_result=result,
                 current_description_prompt=user_instruction,
                 current_image_analysis_mode=analysis_mode_raw,
+                current_image_analysis_agent=analysis_agent,
             )
         )
 

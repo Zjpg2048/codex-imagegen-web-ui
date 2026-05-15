@@ -72,6 +72,15 @@ If these dependencies are missing, the app will reject video render requests wit
 - Fixed local Remotion template render to MP4
 - Video task tracking and export
 
+#### Image to text
+
+- Upload an image and extract a reusable generation prompt or structured visual fields
+- **Agent selection:** Claude (default, uses local `claude` CLI with Haiku 4.5) or Codex
+- Two analysis modes: Reverse prompt / Structured analysis
+- Optional instruction to focus the analysis
+- Result displayed inline within the same section
+- "Use as image prompt" button to feed result directly into the generation form
+
 ### How it works
 
 #### Images
@@ -93,7 +102,8 @@ If these dependencies are missing, the app will reject video render requests wit
 ### Notes
 
 - The web app does **not** require `OPENAI_API_KEY` for image generation.
-- It **does** require an authenticated local Codex session for image generation.
+- It **does** require an authenticated local Codex session for image generation and Codex-based image analysis.
+- Image-to-text with Claude agent requires a logged-in local `claude` CLI session (`claude login`).
 - Video rendering depends on the local `remotion-video/` workspace.
 - Output directories must stay inside this project.
 - Export destinations may be outside the project, but they must already exist and be directories.
