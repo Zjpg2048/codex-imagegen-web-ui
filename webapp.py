@@ -1973,6 +1973,7 @@ def render_page(
           <label for=\"source_image_upload\">Upload source image</label>
           <input id=\"source_image_upload\" name=\"source_image_upload\" type=\"file\" accept=\".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp\" />
           <p class=\"hint\">Optional if you instead choose a project image path below.</p>
+          <div id=\"videoSourcePreview\" style=\"margin-top:8px;\"></div>
         </div>
         <div class=\"row\">
           <div>
@@ -2001,7 +2002,7 @@ def render_page(
     {result_html}
     <section class=\"card\">
       <h2>Image to text</h2>
-      <p class=\"hint\">Upload one image and let the selected agent either reverse-engineer a prompt or extract structured visual fields.</p>
+      <p class=\"hint\">Upload one image and let the selected agent either reverse-engineer a prompt or extract structured visual fields. <a href=\"/analysis-history\" style=\"color:#93c5fd;\">View analysis history</a></p>
       <form method=\"post\" action=\"/describe-image\" id=\"describeImageForm\" enctype=\"multipart/form-data\">
         <div class=\"row\" style=\"grid-template-columns: 1fr 1fr;\">
           <div>
@@ -2020,9 +2021,10 @@ def render_page(
         <label for=\"description_prompt\">Optional instruction</label>
         <textarea id=\"description_prompt\" name=\"prompt\" maxlength=\"{PROMPT_MAX_LENGTH}\" placeholder=\"For example: focus on outfit, style, pose, and scene\">{html.escape(current_description_prompt)}</textarea>
         <div style=\"margin-top: 12px;\">
-          <label for=\"description_image_upload\">Upload source image</label>
+          <label for=\"description_image_upload\">Upload source image(s)</label>
           <input id=\"description_image_upload\" name=\"description_image_upload\" type=\"file\" accept=\".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp\" multiple />
           <p class=\"hint\">Upload up to 4 images. Claude will analyze all of them together.</p>
+          <div id=\"describeImagePreview\" class=\"preview-grid\" style=\"margin-top:8px;\"></div>
         </div>
         <button type=\"submit\" id=\"describeImageSubmitButton\">Analyze image</button>
         <p class=\"status\" id=\"describeImageStatusMessage\">Analyzing image… This can take a little while.</p>
@@ -2158,6 +2160,51 @@ def render_page(
       event.preventDefault();
       mergeReferenceFiles(pastedFiles);
     }});
+    // Image-to-text upload preview
+    const describeImageInput = document.getElementById("description_image_upload");
+    const describeImagePreview = document.getElementById("describeImagePreview");
+    function renderDescribeImagePreviews() {{
+      describeImagePreview.innerHTML = "";
+      const files = Array.from(describeImageInput.files || []);
+      if (!files.length) return;
+      for (const file of files) {{
+        const item = document.createElement("div");
+        item.className = "preview-item";
+        const img = document.createElement("img");
+        img.alt = file.name;
+        const label = document.createElement("p");
+        label.textContent = file.name;
+        item.appendChild(img);
+        item.appendChild(label);
+        describeImagePreview.appendChild(item);
+        const reader = new FileReader();
+        reader.onload = (e) => {{ img.src = String(e.target?.result || ""); }};
+        reader.readAsDataURL(file);
+      }}
+    }}
+    describeImageInput.addEventListener("change", renderDescribeImagePreviews);
+
+    // Video source image upload preview
+    const videoSourceInput = document.getElementById("source_image_upload");
+    const videoSourcePreview = document.getElementById("videoSourcePreview");
+    function renderVideoSourcePreview() {{
+      videoSourcePreview.innerHTML = "";
+      const file = videoSourceInput.files?.[0];
+      if (!file) return;
+      const img = document.createElement("img");
+      img.alt = file.name;
+      img.style.maxHeight = "180px";
+      img.style.width = "auto";
+      img.style.borderRadius = "12px";
+      img.style.marginTop = "8px";
+      img.style.display = "block";
+      videoSourcePreview.appendChild(img);
+      const reader = new FileReader();
+      reader.onload = (e) => {{ img.src = String(e.target?.result || ""); }};
+      reader.readAsDataURL(file);
+    }}
+    videoSourceInput.addEventListener("change", renderVideoSourcePreview);
+
     document.querySelectorAll("[data-use-as-video-source]").forEach((button) => {{
       button.addEventListener("click", () => {{
         videoSourcePathInput.value = String(button.getAttribute("data-image-path") || "");
