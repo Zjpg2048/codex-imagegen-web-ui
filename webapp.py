@@ -97,6 +97,7 @@ from storage import (
     append_history_entry,
     load_analysis_history,
     append_analysis_entry,
+    update_analysis_entry,
     load_saved_prompts,
     save_prompt_entry,
     update_saved_prompt_entry,
@@ -1411,13 +1412,15 @@ def render_analysis_history_page(entries: list[dict[str, Any]], info_message: st
         entries_html = "<p>No analysis history yet.</p>"
     else:
         rows = []
-        for entry in entries:
-            created_at = html.escape(str(entry.get("created_at", ""))[:19].replace("T", " "))
+        for idx, entry in enumerate(entries):
+            created_at_raw = str(entry.get("created_at", ""))
+            created_at_display = html.escape(created_at_raw[:19].replace("T", " "))
+            created_at_val = html.escape(created_at_raw, quote=True)
             agent = html.escape(str(entry.get("analysis_agent", "")))
             mode = html.escape(str(entry.get("analysis_mode", "")))
             instruction = html.escape(str(entry.get("user_instruction", "") or "Analyze the image"))
             output_text = str(entry.get("output_text", ""))
-            output_escaped = html.escape(output_text[:500] + ("…" if len(output_text) > 500 else ""))
+            output_escaped = html.escape(output_text)
             image_path = str(entry.get("image_path", ""))
             img_html = ""
             if image_path:
@@ -1426,10 +1429,21 @@ def render_analysis_history_page(entries: list[dict[str, Any]], info_message: st
             rows.append(f"""
             <div class="card" style="margin-bottom:16px;">
               {img_html}
-              <p style="margin:0 0 4px;font-size:13px;color:#94a3b8;">{created_at} &nbsp;·&nbsp; {agent} &nbsp;·&nbsp; {mode}</p>
+              <p style="margin:0 0 4px;font-size:13px;color:#94a3b8;">{created_at_display} &nbsp;·&nbsp; {agent} &nbsp;·&nbsp; {mode}</p>
               <p style="margin:0 0 8px;font-size:13px;"><strong>Instruction:</strong> {instruction}</p>
-              <pre style="white-space:pre-wrap;word-break:break-word;font-size:13px;margin:0;background:#111827;border-radius:8px;padding:12px;">{output_escaped}</pre>
-              <button type="button" onclick="navigator.clipboard.writeText(this.previousElementSibling.textContent)" style="margin-top:8px;padding:8px 14px;border:0;border-radius:8px;background:#2563eb;color:white;font-size:14px;cursor:pointer;">Copy</button>
+              <pre id="pre-{idx}" style="white-space:pre-wrap;word-break:break-word;font-size:13px;margin:0;background:#111827;border-radius:8px;padding:12px;">{output_escaped}</pre>
+              <form id="form-{idx}" action="/analysis-history/update" method="post" style="display:none;margin-top:8px;">
+                <input type="hidden" name="created_at" value="{created_at_val}" />
+                <textarea name="output_text" style="width:100%;min-height:140px;border-radius:12px;padding:14px;border:1px solid #374151;background:#111827;color:#f9fafb;box-sizing:border-box;font-size:13px;font-family:monospace;">{output_escaped}</textarea>
+                <div style="display:flex;gap:8px;margin-top:8px;">
+                  <button type="submit" style="padding:8px 14px;border:0;border-radius:8px;background:#16a34a;color:white;font-size:14px;cursor:pointer;">Save</button>
+                  <button type="button" onclick="cancelEdit({idx})" style="padding:8px 14px;border:0;border-radius:8px;background:#374151;color:white;font-size:14px;cursor:pointer;">Cancel</button>
+                </div>
+              </form>
+              <div id="actions-{idx}" style="display:flex;gap:8px;margin-top:8px;">
+                <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('pre-{idx}').textContent)" style="padding:8px 14px;border:0;border-radius:8px;background:#2563eb;color:white;font-size:14px;cursor:pointer;">Copy</button>
+                <button type="button" onclick="startEdit({idx})" style="padding:8px 14px;border:0;border-radius:8px;background:#374151;color:white;font-size:14px;cursor:pointer;">Edit</button>
+              </div>
             </div>""")
         entries_html = "\n".join(rows)
 
@@ -1455,6 +1469,18 @@ def render_analysis_history_page(entries: list[dict[str, Any]], info_message: st
     {info_html}
     {entries_html}
   </main>
+  <script>
+    function startEdit(idx) {{
+      document.getElementById("pre-" + idx).style.display = "none";
+      document.getElementById("actions-" + idx).style.display = "none";
+      document.getElementById("form-" + idx).style.display = "block";
+    }}
+    function cancelEdit(idx) {{
+      document.getElementById("form-" + idx).style.display = "none";
+      document.getElementById("pre-" + idx).style.display = "";
+      document.getElementById("actions-" + idx).style.display = "flex";
+    }}
+  </script>
 </body>
 </html>"""
 
@@ -2308,6 +2334,9 @@ class CodexImageGenHandler(BaseHTTPRequestHandler):
         if parsed.path == "/open-folder":
             self._handle_open_folder()
             return
+        if parsed.path == "/analysis-history/update":
+            self._handle_update_analysis_entry()
+            return
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def _handle_generate(self) -> None:
@@ -2598,6 +2627,17 @@ class CodexImageGenHandler(BaseHTTPRequestHandler):
                 current_export_dir=export_dir_raw,
             )
         )
+
+    def _handle_update_analysis_entry(self) -> None:
+        params, _uploads = self._read_form_submission()
+        created_at = params.get("created_at", [""])[0].strip()
+        new_output_text = params.get("output_text", [""])[0]
+        analysis_history_file = self.task_manager.project_root / DEFAULT_ANALYSIS_HISTORY_FILE
+        if not created_at:
+            self._redirect("/analysis-history")
+            return
+        update_analysis_entry(analysis_history_file, created_at, new_output_text)
+        self._redirect("/analysis-history")
 
     def _handle_open_folder(self) -> None:
         params = self._read_form_params()

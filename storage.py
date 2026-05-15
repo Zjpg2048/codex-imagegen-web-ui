@@ -226,3 +226,16 @@ def append_analysis_entry(history_file: Path, result: "ImageAnalysisResult") -> 
     entries.insert(0, entry)
     history_file.parent.mkdir(parents=True, exist_ok=True)
     history_file.write_text(json.dumps(entries[:ANALYSIS_HISTORY_MAX], indent=2), encoding="utf-8")
+
+
+def update_analysis_entry(history_file: Path, created_at: str, new_output_text: str) -> bool:
+    entries = load_analysis_history(history_file)
+    updated = False
+    for entry in entries:
+        if entry.get("created_at") == created_at:
+            entry["output_text"] = new_output_text
+            updated = True
+            break
+    if updated:
+        history_file.write_text(json.dumps(entries[:ANALYSIS_HISTORY_MAX], indent=2), encoding="utf-8")
+    return updated
