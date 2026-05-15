@@ -1405,6 +1405,60 @@ def render_saved_prompts_page(entries: list[dict[str, Any]], info_message: str =
 """
 
 
+def render_analysis_history_page(entries: list[dict[str, Any]], info_message: str = "") -> str:
+    info_html = f'<p class="info">{html.escape(info_message)}</p>' if info_message else ""
+    if not entries:
+        entries_html = "<p>No analysis history yet.</p>"
+    else:
+        rows = []
+        for entry in entries:
+            created_at = html.escape(str(entry.get("created_at", ""))[:19].replace("T", " "))
+            agent = html.escape(str(entry.get("analysis_agent", "")))
+            mode = html.escape(str(entry.get("analysis_mode", "")))
+            instruction = html.escape(str(entry.get("user_instruction", "") or "Analyze the image"))
+            output_text = str(entry.get("output_text", ""))
+            output_escaped = html.escape(output_text[:500] + ("…" if len(output_text) > 500 else ""))
+            image_path = str(entry.get("image_path", ""))
+            img_html = ""
+            if image_path:
+                rel = image_path.replace("\\", "/")
+                img_html = f'<img src="/files/{quote(rel)}" style="max-height:120px;width:auto;border-radius:8px;margin-bottom:8px;" />'
+            rows.append(f"""
+            <div class="card" style="margin-bottom:16px;">
+              {img_html}
+              <p style="margin:0 0 4px;font-size:13px;color:#94a3b8;">{created_at} &nbsp;·&nbsp; {agent} &nbsp;·&nbsp; {mode}</p>
+              <p style="margin:0 0 8px;font-size:13px;"><strong>Instruction:</strong> {instruction}</p>
+              <pre style="white-space:pre-wrap;word-break:break-word;font-size:13px;margin:0;background:#111827;border-radius:8px;padding:12px;">{output_escaped}</pre>
+              <button type="button" onclick="navigator.clipboard.writeText(this.previousElementSibling.textContent)" style="margin-top:8px;padding:8px 14px;border:0;border-radius:8px;background:#2563eb;color:white;font-size:14px;cursor:pointer;">Copy</button>
+            </div>""")
+        entries_html = "\n".join(rows)
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Analysis History</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; background: #111827; color: #f9fafb; }}
+    main {{ max-width: 800px; margin: 0 auto; padding: 32px 20px 64px; }}
+    .card {{ background: #1f2937; border-radius: 16px; padding: 20px; }}
+    .info {{ color: #86efac; font-weight: 600; }}
+    a {{ color: #93c5fd; }}
+  </style>
+</head>
+<body>
+  <main>
+    <div style="display:flex;gap:16px;align-items:center;margin-bottom:20px;">
+      <h1 style="margin:0;">Analysis History</h1>
+      <a href="/">Home</a>
+    </div>
+    {info_html}
+    {entries_html}
+  </main>
+</body>
+</html>"""
+
+
 def render_task_page(task: dict[str, Any]) -> str:
     task_id = html.escape(str(task.get("id", "")))
     task_kind = str(task.get("kind", "image"))
@@ -1799,13 +1853,28 @@ def render_page(
             else ""
         )
         agent_label = IMAGE_ANALYSIS_AGENTS.get(analysis_result.analysis_agent, analysis_result.analysis_agent)
+        output_text = analysis_result.output_text
+        formatted_output_html = ""
+        if analysis_result.analysis_mode == "structured-analysis":
+            try:
+                parsed_json = json.loads(output_text)
+                rows_html = ""
+                for key, val in parsed_json.items():
+                    val_str = ", ".join(str(v) for v in val) if isinstance(val, list) else str(val)
+                    rows_html += f'<tr><td style="padding:6px 12px 6px 0;color:#94a3b8;white-space:nowrap;vertical-align:top;">{html.escape(key)}</td><td style="padding:6px 0;">{html.escape(val_str)}</td></tr>'
+                formatted_output_html = f'<table style="width:100%;border-collapse:collapse;margin-bottom:8px;">{rows_html}</table><pre id="copyTarget" style="display:none;">{html.escape(output_text)}</pre>'
+            except (json.JSONDecodeError, AttributeError):
+                pass
+        if not formatted_output_html:
+            formatted_output_html = f'<pre id="copyTarget" style="white-space:pre-wrap;word-break:break-word;">{html.escape(output_text)}</pre>'
         analysis_result_html = f"""
         <hr style=\"border: none; border-top: 1px solid #374151; margin: 20px 0;\" />
         <h3 style=\"margin: 0 0 12px;\">Result</h3>
         <p style=\"margin: 4px 0;\"><strong>Agent:</strong> {html.escape(agent_label)}</p>
         <p style=\"margin: 4px 0;\"><strong>Mode:</strong> {html.escape(analysis_result.analysis_mode)}</p>
         <p style=\"margin: 4px 0 12px;\"><strong>Instruction:</strong> {html.escape(analysis_result.user_instruction or "Analyze the image")}</p>
-        <pre style=\"white-space: pre-wrap; word-break: break-word;\">{html.escape(analysis_result.output_text)}</pre>
+        {formatted_output_html}
+        <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('copyTarget').textContent)" style="margin-top:4px;padding:8px 14px;border:0;border-radius:8px;background:#2563eb;color:white;font-size:14px;cursor:pointer;">Copy</button>
         {use_as_image_prompt_button_html}
         {_render_media_preview(relative_description_image_path, "Uploaded image")}
         {codex_terminal_html}
@@ -1855,6 +1924,7 @@ def render_page(
     <div class=\"top-links\">
       <h1>Codex ImageGen Web UI</h1>
       <a href=\"/history\">History</a>
+      <a href=\"/analysis-history\">Analysis History</a>
       <a href=\"/tasks\">Tasks</a>
       <a href=\"/saved-prompts\">Saved prompts</a>
     </div>
@@ -1951,7 +2021,8 @@ def render_page(
         <textarea id=\"description_prompt\" name=\"prompt\" maxlength=\"{PROMPT_MAX_LENGTH}\" placeholder=\"For example: focus on outfit, style, pose, and scene\">{html.escape(current_description_prompt)}</textarea>
         <div style=\"margin-top: 12px;\">
           <label for=\"description_image_upload\">Upload source image</label>
-          <input id=\"description_image_upload\" name=\"description_image_upload\" type=\"file\" accept=\".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp\" />
+          <input id=\"description_image_upload\" name=\"description_image_upload\" type=\"file\" accept=\".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp\" multiple />
+          <p class=\"hint\">Upload up to 4 images. Claude will analyze all of them together.</p>
         </div>
         <button type=\"submit\" id=\"describeImageSubmitButton\">Analyze image</button>
         <p class=\"status\" id=\"describeImageStatusMessage\">Analyzing image… This can take a little while.</p>
@@ -2118,6 +2189,10 @@ class CodexImageGenHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/history":
             self._send_html(render_history_page(load_history_entries(self.task_manager.runner.history_file)))
+            return
+        if parsed.path == "/analysis-history":
+            analysis_history_file = self.task_manager.project_root / DEFAULT_ANALYSIS_HISTORY_FILE
+            self._send_html(render_analysis_history_page(load_analysis_history(analysis_history_file)))
             return
         if parsed.path == "/saved-prompts":
             self._send_html(render_saved_prompts_page(load_saved_prompts(self.task_manager.runner.saved_prompts_file)))
@@ -2387,10 +2462,10 @@ class CodexImageGenHandler(BaseHTTPRequestHandler):
             analysis_mode = validate_image_analysis_mode(analysis_mode_raw)
             saved_uploads = save_reference_images(
                 project_root=self.task_manager.project_root,
-                files=uploads.get("description_image_upload", [])[:1],
+                files=uploads.get("description_image_upload", [])[:4],
             )
             if not saved_uploads:
-                raise ValueError("please upload one image to describe")
+                raise ValueError("please upload at least one image to describe")
             task_id = self.task_manager.start_analysis_task(
                 image_path=saved_uploads[0],
                 analysis_mode=analysis_mode,
