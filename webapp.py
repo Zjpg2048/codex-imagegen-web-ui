@@ -1440,8 +1440,9 @@ def render_analysis_history_page(entries: list[dict[str, Any]], info_message: st
                   <button type="button" onclick="cancelEdit({idx})" style="padding:8px 14px;border:0;border-radius:8px;background:#374151;color:white;font-size:14px;cursor:pointer;">Cancel</button>
                 </div>
               </form>
-              <div id="actions-{idx}" style="display:flex;gap:8px;margin-top:8px;">
+              <div id="actions-{idx}" style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;">
                 <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('pre-{idx}').textContent)" style="padding:8px 14px;border:0;border-radius:8px;background:#2563eb;color:white;font-size:14px;cursor:pointer;">Copy</button>
+                <button type="button" onclick="useAsPrompt({idx})" style="padding:8px 14px;border:0;border-radius:8px;background:#7c3aed;color:white;font-size:14px;cursor:pointer;">Use as prompt</button>
                 <button type="button" onclick="startEdit({idx})" style="padding:8px 14px;border:0;border-radius:8px;background:#374151;color:white;font-size:14px;cursor:pointer;">Edit</button>
               </div>
             </div>""")
@@ -1479,6 +1480,10 @@ def render_analysis_history_page(entries: list[dict[str, Any]], info_message: st
       document.getElementById("form-" + idx).style.display = "none";
       document.getElementById("pre-" + idx).style.display = "";
       document.getElementById("actions-" + idx).style.display = "flex";
+    }}
+    function useAsPrompt(idx) {{
+      const text = document.getElementById("pre-" + idx).textContent;
+      window.location.href = "/?" + new URLSearchParams({{ prompt: text }}).toString();
     }}
   </script>
 </body>
