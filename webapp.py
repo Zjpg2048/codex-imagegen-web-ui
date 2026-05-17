@@ -1536,7 +1536,7 @@ def render_task_page(task: dict[str, Any]) -> str:
   {active_tasks_html}
   {progress_html}
   <p>{"This page refreshes automatically. The finished video will appear below." if task_kind == "video" else "This page refreshes automatically. Each finished image will appear below immediately."}</p>
-  {preview_html}
+  <div id="liveImagePreview" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:16px;">{preview_html}</div>
   <details open>
     <summary>Live task log</summary>
     <pre id="taskLiveLog" style="white-space: pre-wrap; background: #0f172a; padding: 12px; border-radius: 10px;">{live_log}</pre>
@@ -1545,6 +1545,29 @@ def render_task_page(task: dict[str, Any]) -> str:
   <p style=\"display:none;\">/tasks/{task_id}/status</p>
   <script>
     const taskLog = document.getElementById("taskLiveLog");
+    const liveImagePreview = document.getElementById("liveImagePreview");
+    let renderedCount = 0;
+    function renderLiveImages(results) {{
+      if (!liveImagePreview || !Array.isArray(results)) return;
+      for (let i = renderedCount; i < results.length; i++) {{
+        const item = results[i];
+        const imgPath = String(item.image_path || "");
+        if (!imgPath) continue;
+        const wrapper = document.createElement("div");
+        wrapper.style.cssText = "background:#1f2937;border-radius:14px;padding:10px;max-width:260px;";
+        const img = document.createElement("img");
+        img.src = "/files/" + imgPath;
+        img.alt = "Generated image";
+        img.style.cssText = "width:100%;border-radius:10px;display:block;";
+        const label = document.createElement("p");
+        label.style.cssText = "margin:6px 0 0;font-size:12px;color:#94a3b8;word-break:break-all;";
+        label.textContent = imgPath.split("/").pop() || imgPath;
+        wrapper.appendChild(img);
+        wrapper.appendChild(label);
+        liveImagePreview.appendChild(wrapper);
+      }}
+      renderedCount = results.length;
+    }}
     const pollTaskStatus = async () => {{
       try {{
         const response = await fetch("/tasks/{task_id}/status", {{ cache: "no-store" }});
@@ -1556,6 +1579,8 @@ def render_task_page(task: dict[str, Any]) -> str:
         if (taskLog) {{
           taskLog.textContent = String(payload.live_log || "");
         }}
+        const results = payload.result?.results || [];
+        renderLiveImages(results);
         if (!["pending", "running", "cancelling"].includes(String(payload.status || ""))) {{
           window.location.reload();
           return;
