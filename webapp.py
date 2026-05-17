@@ -1556,7 +1556,7 @@ def render_task_page(task: dict[str, Any]) -> str:
         const wrapper = document.createElement("div");
         wrapper.style.cssText = "background:#1f2937;border-radius:14px;padding:10px;max-width:260px;";
         const img = document.createElement("img");
-        img.src = "/files/" + imgPath;
+        img.src = "/files/" + encodeURIComponent(imgPath);
         img.alt = "Generated image";
         img.style.cssText = "width:100%;border-radius:10px;display:block;";
         const label = document.createElement("p");
