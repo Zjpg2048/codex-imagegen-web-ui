@@ -1217,10 +1217,13 @@ def render_history_page(entries: list[dict[str, Any]], info_message: str = "") -
         output_dir = html.escape(str(entry.get("output_dir", "")))
         created_at = html.escape(str(entry.get("created_at", "")))
         count = html.escape(str(entry.get("count", 0)))
+        valid_images = [img for img in entry.get("images", []) if isinstance(img, dict)]
+        batch_urls_json = html.escape(
+            json.dumps([f"/files/{quote(str(img.get('path', '')))}" for img in valid_images]),
+            quote=True,
+        )
         images_html = []
-        for image in entry.get("images", []):
-            if not isinstance(image, dict):
-                continue
+        for idx, image in enumerate(valid_images):
             raw_path = str(image.get("path", ""))
             path = html.escape(raw_path, quote=True)
             assistant_message = html.escape(str(image.get("assistant_message", "")))
@@ -1233,7 +1236,10 @@ def render_history_page(entries: list[dict[str, Any]], info_message: str = "") -
                     <button type="submit">Delete file</button>
                   </form>
                   <br />
-                  <img src="/files/{quote(raw_path)}" alt="History thumbnail" style="max-width: 220px; margin-top: 8px; border-radius: 10px;" />
+                  <img src="/files/{quote(raw_path)}" alt="History thumbnail"
+                       style="max-width: 220px; margin-top: 8px; border-radius: 10px; cursor: pointer;"
+                       data-lightbox-batch="{batch_urls_json}"
+                       data-lightbox-index="{idx}" />
                 </li>
                 """
             )
@@ -1287,9 +1293,43 @@ def render_history_page(entries: list[dict[str, Any]], info_message: str = "") -
       0% {{ box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.45); }}
       100% {{ box-shadow: 0 0 0 14px rgba(52, 211, 153, 0); }}
     }}
+    #lightbox {{
+      display: none; position: fixed; inset: 0; z-index: 100;
+      background: rgba(0,0,0,0.92); align-items: center; justify-content: center; flex-direction: column;
+    }}
+    #lightbox.open {{ display: flex; }}
+    #lightbox img {{
+      max-width: min(92vw, 1200px); max-height: 85vh; border-radius: 12px;
+      object-fit: contain; user-select: none;
+    }}
+    #lightbox-counter {{
+      color: #9ca3af; font-size: 14px; margin-top: 12px;
+    }}
+    #lightbox-nav {{
+      display: flex; gap: 16px; margin-top: 14px;
+    }}
+    #lightbox-nav button {{
+      background: #374151; color: #f9fafb; border: none; border-radius: 10px;
+      padding: 8px 20px; font: inherit; font-size: 15px; cursor: pointer;
+    }}
+    #lightbox-nav button:hover {{ background: #4b5563; }}
+    #lightbox-close {{
+      position: absolute; top: 18px; right: 22px;
+      background: none; border: none; color: #9ca3af; font-size: 28px; cursor: pointer; line-height: 1;
+    }}
+    #lightbox-close:hover {{ color: #f9fafb; }}
   </style>
 </head>
 <body>
+  <div id="lightbox" role="dialog" aria-modal="true" aria-label="Image viewer">
+    <button id="lightbox-close" aria-label="Close">&#x2715;</button>
+    <img id="lightbox-img" src="" alt="Full size image" />
+    <div id="lightbox-counter"></div>
+    <div id="lightbox-nav">
+      <button id="lightbox-prev">&#8592; Prev</button>
+      <button id="lightbox-next">Next &#8594;</button>
+    </div>
+  </div>
   <main>
     <h1>History</h1>
     <p><a href=\"/\">← Back to generator</a></p>
@@ -1307,6 +1347,61 @@ def render_history_page(entries: list[dict[str, Any]], info_message: str = "") -
         }}, 1200);
       }});
     }});
+
+    (function () {{
+      const lightbox = document.getElementById("lightbox");
+      const lbImg = document.getElementById("lightbox-img");
+      const lbCounter = document.getElementById("lightbox-counter");
+      const lbClose = document.getElementById("lightbox-close");
+      const lbPrev = document.getElementById("lightbox-prev");
+      const lbNext = document.getElementById("lightbox-next");
+      let batch = [];
+      let current = 0;
+
+      function show(index) {{
+        current = (index + batch.length) % batch.length;
+        lbImg.src = batch[current];
+        lbCounter.textContent = (current + 1) + " / " + batch.length;
+        lbPrev.style.visibility = batch.length > 1 ? "visible" : "hidden";
+        lbNext.style.visibility = batch.length > 1 ? "visible" : "hidden";
+      }}
+
+      function open(batchUrls, index) {{
+        batch = batchUrls;
+        lightbox.classList.add("open");
+        document.body.style.overflow = "hidden";
+        show(index);
+        lbImg.focus();
+      }}
+
+      function close() {{
+        lightbox.classList.remove("open");
+        document.body.style.overflow = "";
+      }}
+
+      document.querySelectorAll("[data-lightbox-batch]").forEach((img) => {{
+        img.addEventListener("click", () => {{
+          const urls = JSON.parse(img.getAttribute("data-lightbox-batch") || "[]");
+          const idx = parseInt(img.getAttribute("data-lightbox-index") || "0", 10);
+          open(urls, idx);
+        }});
+      }});
+
+      lbClose.addEventListener("click", close);
+      lbPrev.addEventListener("click", () => show(current - 1));
+      lbNext.addEventListener("click", () => show(current + 1));
+
+      lightbox.addEventListener("click", (e) => {{
+        if (e.target === lightbox) close();
+      }});
+
+      document.addEventListener("keydown", (e) => {{
+        if (!lightbox.classList.contains("open")) return;
+        if (e.key === "Escape") close();
+        else if (e.key === " " || e.key === "ArrowRight") {{ e.preventDefault(); show(current + 1); }}
+        else if (e.key === "ArrowLeft") {{ e.preventDefault(); show(current - 1); }}
+      }});
+    }})();
   </script>
 </body>
 </html>
