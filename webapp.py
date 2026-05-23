@@ -1239,7 +1239,8 @@ def render_history_page(entries: list[dict[str, Any]], info_message: str = "") -
                   <img src="/files/{quote(raw_path)}" alt="History thumbnail"
                        style="max-width: 220px; margin-top: 8px; border-radius: 10px; cursor: pointer;"
                        data-lightbox-batch="{batch_urls_json}"
-                       data-lightbox-index="{idx}" />
+                       data-lightbox-index="{idx}"
+                       data-reveal-path="{path}" />
                 </li>
                 """
             )
@@ -1379,8 +1380,17 @@ def render_history_page(entries: list[dict[str, Any]], info_message: str = "") -
         document.body.style.overflow = "";
       }}
 
-      document.querySelectorAll("[data-lightbox-batch]").forEach((img) => {{
+      document.querySelectorAll("[data-reveal-path]").forEach((img) => {{
         img.addEventListener("click", () => {{
+          const p = String(img.getAttribute("data-reveal-path") || "");
+          fetch("/reveal-file", {{
+            method: "POST",
+            headers: {{ "Content-Type": "application/x-www-form-urlencoded" }},
+            body: "file_path=" + encodeURIComponent(p),
+          }});
+        }});
+        img.addEventListener("dblclick", (e) => {{
+          e.stopPropagation();
           const urls = JSON.parse(img.getAttribute("data-lightbox-batch") || "[]");
           const idx = parseInt(img.getAttribute("data-lightbox-index") || "0", 10);
           open(urls, idx);
@@ -1623,7 +1633,8 @@ def render_task_page(task: dict[str, Any]) -> str:
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
   <title>Task {task_id}</title>
 </head>
-<body style=\"font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #111827; color: #f9fafb; padding: 32px;\">
+<body style=\"font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #111827; color: #f9fafb; padding: 32px; position: relative;\">
+  <a href=\"/\" style=\"position:absolute;top:28px;right:32px;color:#93c5fd;text-decoration:none;font-size:15px;\">← Back</a>
   <h1>{"Rendering video in background" if task_kind == "video" else "Generating in background"}</h1>
   <p><strong>Prompt:</strong> {prompt}</p>
   {reference_html}
@@ -1636,7 +1647,6 @@ def render_task_page(task: dict[str, Any]) -> str:
     <summary>Live task log</summary>
     <pre id="taskLiveLog" style="white-space: pre-wrap; background: #0f172a; padding: 12px; border-radius: 10px;">{live_log}</pre>
   </details>
-  <p><a href=\"/\" style=\"color:#93c5fd;\">← Back</a></p>
   <p style=\"display:none;\">/tasks/{task_id}/status</p>
   <script>
     const taskLog = document.getElementById("taskLiveLog");
@@ -2459,6 +2469,9 @@ class CodexImageGenHandler(BaseHTTPRequestHandler):
         if parsed.path == "/open-folder":
             self._handle_open_folder()
             return
+        if parsed.path == "/reveal-file":
+            self._handle_reveal_file()
+            return
         if parsed.path == "/analysis-history/update":
             self._handle_update_analysis_entry()
             return
@@ -2775,6 +2788,19 @@ class CodexImageGenHandler(BaseHTTPRequestHandler):
             return
 
         self._send_html(render_page(info_message=f"Opened Finder for {folder_path}"))
+
+    def _handle_reveal_file(self) -> None:
+        params = self._read_form_params()
+        raw_path = params.get("file_path", [""])[0]
+        try:
+            file_path = self._resolve_project_path(raw_path, error_label="file path")
+            if not file_path.is_file():
+                raise ValueError("path is not a file")
+            subprocess.run(["open", "-R", str(file_path)], check=True)
+        except Exception as exc:
+            self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+            return
+        self._send_json({"ok": True})
 
     def _read_form_params(self) -> dict[str, list[str]]:
         content_length = int(self.headers.get("Content-Length", "0"))
